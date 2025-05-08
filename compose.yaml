@@ -1,0 +1,207 @@
+services:
+  db:
+    image: mysql:8.0
+    container_name: mysql-database
+    restart: always
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql:/var/lib/mysql
+    networks:
+      - node-campus-net
+
+  product-migration:
+    image: product-service
+    container_name: product-migration
+    depends_on:
+      db:
+        condition: service_started
+    command: npx prisma migrate deploy
+    build:
+      dockerfile: Dockerfile
+    env_file:
+      - ./products-service/.env
+    networks:
+      - node-campus-net
+
+  product-service:
+    image: product-service
+    container_name: product-service
+    depends_on:
+      product-migration:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_started
+    restart: always
+    build:
+      dockerfile: ./products-service/Dockerfile
+    ports:
+      - "3001:3000"
+    env_file:
+      - ./products-service/.env
+    networks:
+      - node-campus-net
+
+  order-migration:
+    image: order-service
+    container_name: order-migration
+    depends_on:
+      db:
+        condition: service_started
+    command: npx prisma migrate deploy
+    build:
+      dockerfile: Dockerfile
+    env_file:
+      - ./order-service/.env
+    networks:
+      - node-campus-net
+
+  order-service:
+    image: order-service
+    container_name: order-service
+    depends_on:
+      order-migration:
+        condition: service_completed_successfully
+      product-service:
+        condition: service_started
+      rabbitmq:
+        condition: service_started
+    restart: always
+    build:
+      dockerfile: ./order-service/Dockerfile
+    ports:
+      - "5011:5010"
+    env_file:
+      - ./order-service/.env
+    networks:
+      - node-campus-net
+
+  authentication-service:
+    image: authentication-service
+    container_name: authentication-service
+    depends_on:
+      product-migration:
+        condition: service_completed_successfully
+      kratos:
+        condition: service_started
+    restart: always
+    build:
+      dockerfile: ./authentication-service/Dockerfile
+    ports:
+      - "5000:5000"
+    env_file:
+      - ./authentication-service/.env
+    networks:
+      - node-campus-net
+
+  kratos-migrate:
+    image: oryd/kratos:v1.3.1
+    container_name: kratos-migrate
+    environment:
+      - DSN=sqlite:///var/lib/sqlite/db.sqlite?_fk=true&mode=rwc
+    volumes:
+      - type: volume
+        source: kratos-sqlite
+        target: /var/lib/sqlite
+        read_only: false
+      - type: bind
+        source: ./kratos/email-password
+        target: /etc/config/kratos
+    command: -c /etc/config/kratos/kratos.yml migrate sql -e --yes
+    restart: on-failure
+    networks:
+      - kratos-net
+
+  kratos-selfservice-ui-node:
+    image: oryd/kratos-selfservice-ui-node:v1.3.1
+    container_name: kratos-selfservice-ui-node
+    ports:
+      - "4455:4455"
+    environment:
+      - PORT=4455
+      - SECURITY_MODE=
+      - KRATOS_PUBLIC_URL=http://kratos:4433/
+      - KRATOS_BROWSER_URL=http://kratos:4433/
+      - COOKIE_SECRET=changeme123
+      - CSRF_COOKIE_NAME=ory_csrf_ui
+      - CSRF_COOKIE_SECRET=changeme123
+    networks:
+      - kratos-net
+    restart: on-failure
+    depends_on:
+      - kratos
+
+  kratos:
+    depends_on:
+      - kratos-migrate
+    image: oryd/kratos:v1.3.1
+    container_name: kratos
+    ports:
+      - "4433:4433" # public
+      - "4434:4434" # admin
+    restart: unless-stopped
+    environment:
+      - DSN=sqlite:///var/lib/sqlite/db.sqlite?_fk=true
+      - LOG_LEVEL=trace
+    command: serve -c /etc/config/kratos/kratos.yml --dev --watch-courier
+    volumes:
+      - type: volume
+        source: kratos-sqlite
+        target: /var/lib/sqlite
+        read_only: false
+      - type: bind
+        source: ./kratos/email-password
+        target: /etc/config/kratos
+    networks:
+      - node-campus-net
+      - kratos-net
+
+  mailslurper:
+    image: oryd/mailslurper:latest-smtps
+    container_name: mailslurper
+    ports:
+      - "4436:4436"
+      - "4437:4437"
+    networks:
+      - node-campus-net
+
+  rabbitmq:
+    image: rabbitmq:3.12-management
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    env_file:
+      - ./rabbitMQ-service/.env
+    networks:
+      - node-campus-net
+
+  api-docs-service:
+    image: api-docs-service
+    container_name: api-docs-service
+    dockerfile: ./api-docs-service/Dockerfile
+    ports:
+      - "11000:11000"
+    depends_on:
+      authentication-service:
+        condition: service_started
+      product-service:
+        condition: service_started
+    env_file:
+      - ./api-docs-service/.env
+    networks:
+      - node-campus-net
+
+volumes:
+  mysql:
+  kratos-sqlite:
+
+networks:
+  node-campus-net:
+    driver: bridge
+  kratos-net:

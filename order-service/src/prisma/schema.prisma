@@ -1,0 +1,37 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("NODE_CAMPUS_DATABASE_URL")
+}
+
+model Order {
+  id              String   @id @default(uuid())
+  customerId      String
+  totalQuantity   Int
+  totalPrice      Float
+  shippingAddress String
+  status          OrderStatus @default(PENDING)
+  notes           String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  orderItems      OrderItem[]
+}
+
+model OrderItem {
+  id         String  @id @default(uuid())
+  orderId    String
+  productId  String
+  price      Float
+  quantity   Int
+
+  order      Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+}
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  CANCELED
+}
